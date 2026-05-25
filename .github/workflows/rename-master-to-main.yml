@@ -1,0 +1,69 @@
+name: Rename master → main
+
+on:
+  workflow_dispatch:
+    inputs:
+      delete_master:
+        description: 'Delete master after rename?'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install -y gh
+
+      - name: Authenticate gh
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_PAT || github.token }}
+        run: |
+          echo "$GH_TOKEN" | gh auth login --with-token
+
+      - name: Get master SHA
+        id: master_sha
+        run: |
+          set -e
+          repo="${{ github.repository }}"
+          if gh api --silent "/repos/$repo/branches/master" >/dev/null 2>&1; then
+            sha=$(gh api "/repos/$repo/git/ref/heads/master" --jq '.object.sha')
+            echo "::set-output name=sha::$sha"
+          else
+            echo "No master branch found."
+            exit 1
+          fi
+
+      - name: Create main
+        run: |
+          repo="${{ github.repository }}"
+          sha="${{ steps.master_sha.outputs.sha }}"
+          if gh api --silent "/repos/$repo/branches/main" >/dev/null 2>&1; then
+            echo "main already exists; skipping creation."
+          else
+            gh api -X POST "/repos/$repo/git/refs" -f ref="refs/heads/main" -f sha="$sha"
+            echo "Created main."
+          fi
+
+      - name: Set default branch to main
+        run: |
+          repo="${{ github.repository }}"
+          gh repo edit "$repo" --default-branch main
+          echo "Default branch set to main."
+
+      - name: Optionally delete master
+        if: ${{ github.event.inputs.delete_master == 'true' }}
+        run: |
+          repo="${{ github.repository }}"
+          gh api -X DELETE "/repos/$repo/git/refs/heads/master"
+          echo "Deleted master."
